@@ -116,13 +116,10 @@ public class HelloApplication extends Application {
             System.out.println("rotateY=" + rotateY.getAngle() + ", rotateX=" + rotateX.getAngle()); // ADD THIS
         });
 
-
-
-
-        // Load GeoJSON once
         try {
-            var is = HelloApplication.class.getResourceAsStream("/countries.geojson");
-            fullJson = new String(is.readAllBytes());
+            InputStream is = HelloApplication.class.getResourceAsStream("/countries.geojson");
+            String fullJson = new String(is.readAllBytes());
+            Country.parseAllCountries(fullJson);  // fullJson field no longer needed
         } catch (Exception e) {
             System.out.println("Failed to load GeoJSON: " + e.getMessage());
             return;
@@ -188,7 +185,6 @@ public class HelloApplication extends Application {
                 for (Country neighbor : country.loadNeighbors(input)) {
                     newNeighbors.add(neighbor);
                 }
-
 
                 System.out.println("Input: [" + input + "]");
                 System.out.println("Neighbors loaded: " + newNeighbors.size());
@@ -369,62 +365,16 @@ public class HelloApplication extends Application {
     }
 
     public static void drawCountryByName(String targetName) {
-        int i = fullJson.indexOf("\"features\"");
-
-        while (true) {
-            int featureStart = fullJson.indexOf("{ \"type\": \"Feature\"", i);
-            if (featureStart == -1) {
-                System.out.println("Country not found: " + targetName);
-                break;
-            }
-
-            int nextFeature = fullJson.indexOf("{ \"type\": \"Feature\"", featureStart + 1);
-            String featureJson = nextFeature != -1
-                    ? fullJson.substring(featureStart, nextFeature)
-                    : fullJson.substring(featureStart);
-
-            // Extract name
-            int nameIndex = featureJson.indexOf("\"name\": \"");
-            if (nameIndex == -1) { i = featureStart + 1; continue; }
-            int nameStart = nameIndex + 9;
-            int nameEnd = featureJson.indexOf("\"", nameStart);
-            String countryName = featureJson.substring(nameStart, nameEnd);
-
-            if (!countryName.equalsIgnoreCase(targetName)) {
-                i = featureStart + 1;
-                continue;
-            }
-
-            // Extract geometry type
-            int geometryIndex = featureJson.indexOf("\"geometry\"");
-            int typeIndex = featureJson.indexOf("\"type\"", geometryIndex);
-            int typeValueStart = featureJson.indexOf("\"", typeIndex + 7) + 1;
-            int typeValueEnd = featureJson.indexOf("\"", typeValueStart);
-            String geomType = featureJson.substring(typeValueStart, typeValueEnd);
-
-            // Extract coordinates JSON
-            int coordsIndex = featureJson.indexOf("\"coordinates\"");
-            int arrayStart = featureJson.indexOf("[", coordsIndex);
-            String coordsJson = featureJson.substring(arrayStart);
-
-            ArrayList<double[][]> polygons = new ArrayList<>();
-            if (geomType.equals("Polygon")) {
-                // coords = [ [ [lon,lat], ... ] ]  — extract the inner ring at depth 2
-                polygons = parsePolygon(coordsJson);
-            } else if (geomType.equals("MultiPolygon")) {
-                polygons = parseMultiPolygon(coordsJson);
-            }
-
-            System.out.println("Drawing: " + countryName + " (" + polygons.size() + " polygon(s))");
-            final ArrayList<double[][]> finalPolygons = polygons;
-            //Platform.runLater(() -> drawCountry(finalPolygons, Color.LIGHTGREEN, Color.DARKGREEN));
-            Platform.runLater(() -> {
-                drawCountry3DFilled(finalPolygons, Color.LIGHTGREEN);
-                drawCountry3D(finalPolygons, Color.DARKCYAN);
-                //centerGlobeOnCountry(finalPolygons);
-            });
-            break;
+        ArrayList<Country> rings = Country.getRings(targetName);
+        if (rings == null) {
+            System.out.println("Country not found: " + targetName);
+            return;
         }
+        System.out.println("Drawing: " + targetName + " (" + rings.size() + " ring(s))");
+        Platform.runLater(() -> {
+            drawCountry3DFilled(rings, Color.LIGHTGREEN);
+            drawCountry3D(rings, Color.DARKCYAN);
+        });
     }
 
     /**
@@ -537,24 +487,17 @@ public class HelloApplication extends Application {
         return MARGIN + (1 - (lat + 90) / 180.0) * (HEIGHT - 2 * MARGIN);
     }
 
-    public static void drawCountry3D(ArrayList<double[][]> polygons, Color color) {
-        // Helps with the lighting
+
+    public static void drawCountry3D(ArrayList<Country> rings, Color color) {
         PhongMaterial mat = new PhongMaterial();
         mat.setDiffuseColor(color);
         mat.setSpecularColor(color.brighter());
 
-        // Draw all rings in the polygon
-        for (double[][] ring : polygons) {
-            // Skip every 2nd point if the ring is very dense
-            int step = ring.length > 500 ? 3 : ring.length > 200 ? 2 : 1;
-
-            // Go through ring
-            for (int k = 0; k < ring.length; k += step) {
-                double[] point = ring[k];
-                double[] xyz   = latLonToXYZ(point[1], point[0], GLOBE_RADIUS + 1.01);
-                // +1 so the dots sit just above the ocean sphere surface
-
-                // Plot the dot
+        for (Country ring : rings) {
+            double[][] pts = ring.getPoints();
+            int step = pts.length > 500 ? 3 : pts.length > 200 ? 2 : 1;
+            for (int k = 0; k < pts.length; k += step) {
+                double[] xyz = latLonToXYZ(pts[k][1], pts[k][0], GLOBE_RADIUS + 1.01);
                 Sphere dot = new Sphere(DOT_RADIUS);
                 dot.setMaterial(mat);
                 dot.setTranslateX(xyz[0]);
@@ -565,41 +508,21 @@ public class HelloApplication extends Application {
         }
     }
 
-    public static void drawCountry3DFilled(ArrayList<double[][]> polygons, Color color) {
-        // Lighting for the points
+    public static void drawCountry3DFilled(ArrayList<Country> rings, Color color) {
         PhongMaterial mat = new PhongMaterial();
         mat.setDiffuseColor(color);
         mat.setSpecularColor(color.brighter());
 
-        // 1. Find bounding box across all rings
-        double minLat = 90, maxLat = -90;
-        double minLon = 180, maxLon = -180;
-        // Go through rings
-        for (double[][] ring : polygons) {
-            // Go through points in ring and find the lowest/highest points for x and y
-            for (double[] pt : ring) {
-                if (pt[0] < minLon) {
-                    minLon = pt[0];
-                }
-                if (pt[0] > maxLon) {
-                    maxLon = pt[0];
-                }
-                if (pt[1] < minLat)  {
-                    minLat  = pt[1];
-                }
-                if (pt[1] > maxLat)  {
-                    maxLat  = pt[1];
-                }
-            }
-        }
+        // Bounding box across all rings — O(n_rings) using stored fields
+        double minLat = rings.stream().mapToDouble(r -> r.minLat).min().orElse(-90);
+        double maxLat = rings.stream().mapToDouble(r -> r.maxLat).max().orElse(90);
+        double minLon = rings.stream().mapToDouble(r -> r.minLon).min().orElse(-180);
+        double maxLon = rings.stream().mapToDouble(r -> r.maxLon).max().orElse(180);
 
-        // Fill it in
         double step = 0.7;
-
         for (double lat = minLat; lat <= maxLat; lat += step) {
             for (double lon = minLon; lon <= maxLon; lon += step) {
-                // 3. Point-in-polygon test against ALL rings
-                if (isPointInAnyPolygon(lat, lon, polygons)) {
+                if (Country.isPointInAnyRing(lat, lon, rings)) {
                     double[] xyz = latLonToXYZ(lat, lon, GLOBE_RADIUS + 1.0);
                     Sphere dot = new Sphere(DOT_RADIUS);
                     dot.setMaterial(mat);
@@ -612,40 +535,6 @@ public class HelloApplication extends Application {
         }
     }
 
-    // Ray casting algorithm — counts crossings of a horizontal ray
-    public static boolean isPointInAnyPolygon(double lat, double lon, ArrayList<double[][]> polygons) {
-        for (double[][] ring : polygons) {
-            if (isPointInRing(lat, lon, ring)) return true;
-        }
-        return false;
-    }
-
-    // Taking up 50% of runtime MAKE MORE EFFICIENT
-    public static boolean isPointInRing(double lat, double lon, double[][] ring) {
-        // Quick bounding box rejection
-        double minLon = ring[0][0], maxLon = ring[0][0];
-        double minLat = ring[0][1], maxLat = ring[0][1];
-        for (double[] pt : ring) {
-            if (pt[0] < minLon) minLon = pt[0];
-            if (pt[0] > maxLon) maxLon = pt[0];
-            if (pt[1] < minLat) minLat = pt[1];
-            if (pt[1] > maxLat) maxLat = pt[1];
-        }
-        if (lon < minLon || lon > maxLon || lat < minLat || lat > maxLat) return false;
-
-        // Ray casting only if inside bounding box
-        boolean inside = false;
-        int n = ring.length;
-        for (int i = 0, j = n - 1; i < n; j = i++) {
-            double xi = ring[i][0], yi = ring[i][1];
-            double xj = ring[j][0], yj = ring[j][1];
-            boolean intersects = ((yi > lat) != (yj > lat))
-                    && (lon < (xj - xi) * (lat - yi) / (yj - yi) + xi);
-            if (intersects) inside = !inside;
-        }
-        return inside;
-    }
-
     public static double[] latLonToXYZ(double latDeg, double lonDeg, double R) {
         double lat = Math.toRadians(latDeg);
         double lon = Math.toRadians(lonDeg);
@@ -653,47 +542,6 @@ public class HelloApplication extends Application {
         double y = -R * Math.sin(lat);
         double z =  R * Math.cos(lat) * Math.cos(lon);
         return new double[]{x, y, z};
-    }
-
-    public static void createContinentButtons(Pane rootPane) {
-        // {name, lat, lon}  — geographic center of each continent
-        // {name, rotateY (left/right spin), rotateX (up/down tilt)}
-        String[][] continents = {
-                {"North America", "80",  "44"},
-                {"South America", "122",   "-21"},
-                {"Europe",        "197",    "38"},
-                {"Africa",        "200",    "-1"},
-                {"Asia",          "280",  "33"},
-                {"Oceania",       "-12", "-26"},
-                {"Antarctica",    "195",    "-95"}
-        };
-
-        double startX = WIDTH - 300;
-        double startY = 80;
-        double buttonHeight = 35;
-
-        for (int i = 0; i < continents.length; i++) {
-            String name = continents[i][0];
-            double spinLeftRight = Double.parseDouble(continents[i][1]);
-            double tiltUpDown = Double.parseDouble(continents[i][2]);
-
-            javafx.scene.control.Button btn = new javafx.scene.control.Button(name);
-            btn.setLayoutX(startX);
-            btn.setLayoutY(startY + i * buttonHeight);
-            btn.setPrefWidth(160);
-
-            btn.setOnAction(e -> {
-                // Deselect previous button
-                if (activeButton != null) {
-                    activeButton.setStyle("");
-                }
-                // Highlight this button
-                btn.setStyle("-fx-background-color: lightgreen;");
-                activeButton = btn;
-                centerGlobeOn(spinLeftRight, tiltUpDown);
-            });
-            rootPane.getChildren().add(btn);
-        }
     }
 
     public static void centerGlobeOn(double spinLeftRight, double tiltUpDown) {
