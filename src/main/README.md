@@ -1,4 +1,4 @@
-# Borders
+# Borders Game
 ### A Geography Game by Lily Kassaei
 
 **Borders** is an interactive 3D globe game where you guess countries one at a time. Every guess after your first must share a border with your previous guess. Navigate the world strategically, chain your guesses across continents, and try to name all 196 countries before making 10 mistakes.

@@ -1,6 +1,6 @@
 // Original Game Borders By Lily Kassaei
 
-// Imports
+// Imports and libraries
 package org.example.demo1;
 
 import javafx.application.Application;
